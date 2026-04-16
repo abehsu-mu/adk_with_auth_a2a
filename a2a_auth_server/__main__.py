@@ -28,6 +28,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.middleware.authentication import AuthenticationMiddleware
 import base64
 import json
+import time
 import uvicorn
 
 _PUBLIC_PATHS = {
@@ -77,7 +78,12 @@ class InsecureJWTAuthBackend(AuthenticationBackend):
                 jwt_claims += '=' * (4 - missing_padding)
             payload = base64.urlsafe_b64decode(jwt_claims).decode('utf-8')
             parsed_payload = json.loads(payload)
+            exp = parsed_payload.get('exp')
+            if exp is not None and time.time() > exp:
+                raise AuthenticationError('Token has expired.')
             return AuthCredentials([]), SimpleUser(parsed_payload['upn'])
+        except AuthenticationError:
+            raise
         except Exception as exc:
             raise AuthenticationError('Invalid or malformed token.') from exc
 

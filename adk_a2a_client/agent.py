@@ -29,22 +29,62 @@ vertexai.init(
 
 
 class TokenRefreshAuth(httpx.Auth):
+    """httpx.Auth implementation that supports Azure AD OAuth2 token refresh.
+
+    On a 401 response the auth handler will POST to the Azure token endpoint
+    using the standard OAuth2 refresh-token grant
+    (https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow#refresh-the-access-token)
+    and retry the original request with the new access token.
+
+    Required Azure token-endpoint parameters
+    -----------------------------------------
+    client_id     : Application (client) ID registered in Azure AD.
+    client_secret : Client secret for the registered application.
+    scope         : Space-separated list of scopes (e.g. ``"api://<app-id>/.default"``).
+    """
+
     requires_response_body = True
 
-    def __init__(self, access_token, refresh_token, token_url):
+    def __init__(
+        self,
+        access_token: str,
+        refresh_token: str,
+        token_url: str,
+        client_id: str,
+        client_secret: str,
+        scope: str,
+    ):
         self.access_token = access_token
         self.refresh_token = refresh_token
         self.token_url = token_url
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.scope = scope
 
-    async def _async_refresh_token(self):
+    async def _async_refresh_token(self) -> None:
+        """Exchange the current refresh token for a new access (and refresh) token.
+
+        Follows the Azure AD OAuth2 refresh-token grant:
+        https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow#refresh-the-access-token
+        """
         async with httpx.AsyncClient() as client:
-            resp = await client.post(self.token_url, data={
-                "grant_type": "refresh_token",
-                "refresh_token": self.refresh_token,
-            })
+            resp = await client.post(
+                self.token_url,
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "scope": self.scope,
+                    "refresh_token": self.refresh_token,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
         resp.raise_for_status()
         data = resp.json()
         self.access_token = data["access_token"]
+        # Azure may rotate the refresh token; persist the latest one when present.
+        if "refresh_token" in data:
+            self.refresh_token = data["refresh_token"]
 
     async def async_auth_flow(self, request):
         request.headers["Authorization"] = f"Bearer {self.access_token}"
@@ -72,8 +112,11 @@ class TokenRefreshAuth(httpx.Auth):
 
 _auth = TokenRefreshAuth(
     access_token=os.environ["OAUTH_ACCESS_TOKEN"],
-    refresh_token=os.environ["OAUTH_FERESH_TOKEN"],
+    refresh_token=os.environ["OAUTH_REFRESH_TOKEN"],
     token_url=os.environ["OAUTH_TOKEN_URL"],
+    client_id=os.environ["OAUTH_CLIENT_ID"],
+    client_secret=os.environ["OAUTH_CLIENT_SECRET"],
+    scope=os.environ["OAUTH_SCOPE"],
 )
 
 _httpx_client = httpx.AsyncClient(
